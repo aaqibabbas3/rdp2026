@@ -1,4 +1,4 @@
-name: AI-Workstation-Backup-Crypto
+name: Ultimate-AI-Workstation-2026
 on:
   workflow_dispatch:
   schedule:
@@ -13,38 +13,59 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_BACKUP_TOKEN }} # Backup ke liye naya token chahiye
+          # Note: GH_BACKUP_TOKEN aapne GitHub Secrets mein lazmi add karna hai
+          token: ${{ secrets.GH_BACKUP_TOKEN }} 
 
-      - name: Cache Models
+      - name: Cache Ollama Models
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\Programs\Ollama\models
           key: ${{ runner.os }}-ollama-qwen-7b
 
-      - name: System Boost & User Setup
+      - name: System Power & RAM Boost
         run: |
+          # Virtual RAM setup (Large models ke liye zaroori hai)
           wmic computersystem where name="%computername%" set AutomaticManagedPagefile=False
           wmic pagefileset create name="C:\\pagefile.sys",InitialSize=16384,MaximumSize=32768
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+
+      - name: Install Tools (Tailscale & Ollama)
+        run: |
+          # Tailscale Install
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "ts.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
+          
+          # Ollama Install
+          Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile "ollama.exe"
+          Start-Process -FilePath "ollama.exe" -ArgumentList "/silent" -Wait
+
+      - name: Configure Network & User
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          netsh advfirewall firewall add rule name="RDP-Inbound" dir=in action=allow protocol=TCP localport=3389
+          
           $pass = "DevMode@2026#"
           $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
           New-LocalUser -Name "RDP" -Password $secPass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
 
-      - name: Install AI & Tailscale
+      - name: Launch AI & Tailscale
         run: |
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "ts.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
-          Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile "ollama.exe"
-          Start-Process -FilePath "ollama.exe" -ArgumentList "/silent" -Wait
-
-      - name: Start Services & Pull Model
-        run: |
+          # Tailscale Up
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=ai-server-epyc
+          
+          # Environment variable for External API access
           [Environment]::SetEnvironmentVariable("OLLAMA_HOST", "0.0.0.0", "Machine")
-          Start-Process -FilePath "$env:LocalAppData\Programs\Ollama\ollama.exe" -ArgumentList "serve" -WindowStyle Hidden
+          
+          # Fix: Ollama ko background mein sahi tarah start karna
+          $ollamaPath = "$env:LocalAppData\Programs\Ollama\ollama.exe"
+          Start-Process -FilePath $ollamaPath -ArgumentList "serve" -WindowStyle Hidden
+          
+          # Wait for server to wake up
           Start-Sleep -Seconds 20
-          & "$env:LocalAppData\Programs\Ollama\ollama.exe" pull qwen2.5-coder:7b
+          
+          # Model Pull
+          & $ollamaPath pull qwen2.5-coder:7b
 
       - name: Background Auto-Backup & Crypto Watch
         shell: pwsh
@@ -52,34 +73,35 @@ jobs:
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
           Write-Host "RDP READY AT: $tsIP"
           
-          # Background Loop for Backup & Crypto
           $script = {
+              param($token)
               while ($true) {
-                  # 1. Crypto Monitoring (Example: BNB Price)
+                  # 1. Crypto Watch (BNB)
                   try {
                       $crypto = Invoke-RestMethod -Uri "https://api.binance.com/api/v3/ticker/price?symbol=BNBUSDT"
-                      $msg = "[$(Get-Date)] BNB Price: $($crypto.price)"
-                      $msg | Out-File -FilePath "C:\crypto_log.txt" -Append
+                      "[$(Get-Date)] BNB Price: $($crypto.price)" | Out-File -FilePath "C:\crypto_log.txt" -Append
                   } catch { }
 
                   # 2. Auto-Git Backup
                   if (Test-Path ".git") {
+                      git config --global user.email "backup-bot@example.com"
+                      git config --global user.name "Backup Bot"
                       git add .
                       git commit -m "Auto-backup: $(Get-Date)"
                       git push origin main
                   }
-                  
-                  Start-Sleep -Seconds 900 # 15 minutes ka gap
+                  Start-Sleep -Seconds 900
               }
           }
-          Start-Job -ScriptBlock $script
+          # Job start karte waqt token pass karna zaroori hai
+          Start-Job -ScriptBlock $script -ArgumentList "${{ secrets.GH_BACKUP_TOKEN }}"
 
-      - name: Keep Alive
+      - name: Keep Alive & Monitor
         run: |
           $timeout = New-TimeSpan -Minutes 350
           $sw = [diagnostics.stopwatch]::StartNew()
           while ($sw.Elapsed -lt $timeout) {
               $cpu = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
-              Write-Host "[$(Get-Date)] Server Active | CPU: $([math]::Round($cpu, 1))%"
+              Write-Host "[$(Get-Date)] CPU: $([math]::Round($cpu, 1))% | AI Server Active"
               Start-Sleep -Seconds 300
           }
